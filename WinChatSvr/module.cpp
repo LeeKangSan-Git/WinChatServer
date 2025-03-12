@@ -21,7 +21,7 @@ PVOID GetSockExtAPI(SOCKET sock, GUID guidFn)
 	return pfnEx;
 }
 
-SOCKET GetListen(short Port, int nBacklog = SOMAXCONN)
+SOCKET GetListen(short Port, int nBacklog)
 {
 	SOCKET hsoListen = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 	if (hsoListen == INVALID_SOCKET)
@@ -51,33 +51,31 @@ SOCKET GetListen(short Port, int nBacklog = SOMAXCONN)
 	return hsoListen;
 }
 
-PIOCP_ENV MakeIocp(int Th = 3, HANDLE hDevice)
+DWORD MakeIocp(SOCKET hDevice, PIOCP_ENV pi, int Th)
 {
-	PIOCP_ENV pi;
-	memset(&pi, 0, sizeof(pi));
 	DWORD dwThrId = 0;
-	pi->_iocp = CreateIoCompletionPort(hDevice, NULL, IOKEY_LISTEN, 2);
+	pi->_iocp = CreateIoCompletionPort((HANDLE)hDevice, NULL, IOKEY_LISTEN, MAX_TH);
 
 	for (int i = 0; i < Th; i++)
 	{
-		pi->hThread[i] = CreateThread(NULL, 0, IocpCallBack, &pi, 0, &dwThrId);
+		pi->hThread[i] = CreateThread(NULL, 0, IocpCallBack, pi, 0, &dwThrId);
 		pi->ThreadCnt++;
 	}
 
-	return pi;
+	return 0;
 }
 
-DWORD MakeSockPool(SOCKET hsoListen, int Sc, SOCK_SET ss)
+DWORD MakeSockPool(SOCKET hsoListen, DWORD Sc, SOCK_SET* ss)
 {
 	LPFN_ACCEPTEX pfnAcceptEx = (LPFN_ACCEPTEX)GetSockExtAPI(hsoListen, WSAID_ACCEPTEX);
 	DWORD SockCnt = 0;
-	for (; SockCnt < SOCKPOOL_MAX; SockCnt++)
+	for (; SockCnt < Sc; SockCnt++)
 	{
 		SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 		if (sock == INVALID_SOCKET)
 			break;
 		PSOCK_ITEM pi = new SOCK_ITEM(sock);
-		if (pfnAcceptEx(hsoListen, sock, pi->_buff, 0, sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, NULL, (LPOVERLAPPED)pi) == FALSE)
+		if (pfnAcceptEx(hsoListen, pi->_sock, pi->_buff, 0, sizeof(SOCKADDR_IN) + 16, sizeof(SOCKADDR_IN) + 16, NULL, (LPOVERLAPPED)pi) == FALSE)
 		{
 			if (WSAGetLastError() != WSA_IO_PENDING)
 			{
@@ -87,12 +85,12 @@ DWORD MakeSockPool(SOCKET hsoListen, int Sc, SOCK_SET ss)
 				break;
 			}
 		}
-		ss.insert(pi);
+		ss->insert(pi);
 	}
 	return SockCnt;
 }
 
-DWORD IocpCallBack(PVOID pParam)
+DWORD WINAPI IocpCallBack(PVOID pParam)
 {
 	PIOCP_ENV pi = (PIOCP_ENV)pParam;
 	PSOCK_ITEM psi = NULL;
@@ -105,10 +103,10 @@ DWORD IocpCallBack(PVOID pParam)
 			if (GetQueuedCompletionStatus(pi->_iocp, &dwBytes, &Status, (LPOVERLAPPED*)&psi, INFINITE) == FALSE)
 			{
 				if (psi != NULL)
-					throw (int)psi->Internal;
+					throw (DWORD)psi->Internal;
 
 				int nErrCode = WSAGetLastError();
-				if (nErrCode == ERROR_ABANDONED_WAIT_0)
+				if (nErrCode != ERROR_ABANDONED_WAIT_0)
 					cout << "GQCS failed : " << nErrCode << endl;
 				break;
 			}
@@ -116,18 +114,21 @@ DWORD IocpCallBack(PVOID pParam)
 			if (Status == IOKEY_LISTEN)
 			{
 				CreateIoCompletionPort((HANDLE)psi->_sock, pi->_iocp, IOKEY_CHILD, 0);
-				cout << "New Client In : " << psi->_sock << "connected..." << endl;
-				pi->pool.erase(psi);
-				pi->conn.insert(psi);
+				cout << "New Client In : " << psi->_sock << " ,connected..." << endl;
+				PostThreadMessage(pi->MainThrId, TM_SOCK_CONNECTED, 0, (LPARAM)psi);
 			}
 			else
 			{
 				if (dwBytes == 0)
 					throw (INT)ERROR_SUCCESS;
-				for (SOCK_SET::iterator it = pi->conn.begin(); it != pi->conn.end(); it++)
+				for (SOCK_SET::iterator it = pi->conn->begin(); it != pi->conn->end(); it++)
 				{
-					if (send((*it)->_sock, psi->_buff, dwBytes, 0) == SOCKET_ERROR)
-						throw WSAGetLastError();
+					PSOCK_ITEM target = *it;
+					if (target != psi)
+					{
+						if (send(target->_sock, psi->_buff, dwBytes, 0) == SOCKET_ERROR)
+							throw WSAGetLastError();
+					}
 				}
 			}
 
@@ -137,7 +138,7 @@ DWORD IocpCallBack(PVOID pParam)
 			if (WSARecv(psi->_sock, &wsb, 1, NULL, &dwFlags, psi, NULL) == SOCKET_ERROR)
 			{
 				int nErrCode = WSAGetLastError();
-				if (nErrCode == WSA_IO_PENDING)
+				if (nErrCode != WSA_IO_PENDING)
 					throw nErrCode;
 			}
 		}
@@ -145,17 +146,17 @@ DWORD IocpCallBack(PVOID pParam)
 		{
 			if (ex == STATUS_LOCAL_DISCONNECT || ex == STATUS_CANCELLED)
 			{
-				cout << " Child socket closed." << endl;
+				cout << "Child socket closed." << endl;
 				continue;
 			}
 			if (ex == ERROR_SUCCESS)
 				cout << "Client " << psi->_sock << " disconnected..." << endl;
 			else if (ex == STATUS_CONNECTION_RESET)
-				cout << " Pending Client " << psi->_sock << " disconnected..." << endl;
+				cout << "Pending Client " << psi->_sock << " disconnected..." << endl;
 			else
-				cout << " Client " << psi->_sock << " has error" << ex << endl;
+				cout << "Client " << psi->_sock << " has error" << ex << endl;
 
-			SetEvent(pi->ExtEvent);
+			PostThreadMessage(pi->MainThrId, TM_SOCK_DISCONNECT, ex, (LPARAM)psi);
 		}
 	}
 	return 0;
