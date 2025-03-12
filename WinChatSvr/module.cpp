@@ -60,7 +60,7 @@ PIOCP_ENV MakeIocp(int Th = 3, HANDLE hDevice)
 
 	for (int i = 0; i < Th; i++)
 	{
-		pi->hThread[i] = CreateThread(NULL, 0, IocpCallBack, NULL, 0, &dwThrId);
+		pi->hThread[i] = CreateThread(NULL, 0, IocpCallBack, &pi, 0, &dwThrId);
 		pi->ThreadCnt++;
 	}
 
@@ -94,5 +94,69 @@ DWORD MakeSockPool(SOCKET hsoListen, int Sc, SOCK_SET ss)
 
 DWORD IocpCallBack(PVOID pParam)
 {
-	
+	PIOCP_ENV pi = (PIOCP_ENV)pParam;
+	PSOCK_ITEM psi = NULL;
+	DWORD dwBytes = 0;
+	ULONG_PTR Status = 0;
+	while (true)
+	{
+		try
+		{
+			if (GetQueuedCompletionStatus(pi->_iocp, &dwBytes, &Status, (LPOVERLAPPED*)&psi, INFINITE) == FALSE)
+			{
+				if (psi != NULL)
+					throw (int)psi->Internal;
+
+				int nErrCode = WSAGetLastError();
+				if (nErrCode == ERROR_ABANDONED_WAIT_0)
+					cout << "GQCS failed : " << nErrCode << endl;
+				break;
+			}
+
+			if (Status == IOKEY_LISTEN)
+			{
+				CreateIoCompletionPort((HANDLE)psi->_sock, pi->_iocp, IOKEY_CHILD, 0);
+				cout << "New Client In : " << psi->_sock << "connected..." << endl;
+				pi->pool.erase(psi);
+				pi->conn.insert(psi);
+			}
+			else
+			{
+				if (dwBytes == 0)
+					throw (INT)ERROR_SUCCESS;
+				for (SOCK_SET::iterator it = pi->conn.begin(); it != pi->conn.end(); it++)
+				{
+					if (send((*it)->_sock, psi->_buff, dwBytes, 0) == SOCKET_ERROR)
+						throw WSAGetLastError();
+				}
+			}
+
+			DWORD dwFlags = 0;
+			WSABUF wsb;
+			wsb.buf = psi->_buff, wsb.len = sizeof(psi->_buff);
+			if (WSARecv(psi->_sock, &wsb, 1, NULL, &dwFlags, psi, NULL) == SOCKET_ERROR)
+			{
+				int nErrCode = WSAGetLastError();
+				if (nErrCode == WSA_IO_PENDING)
+					throw nErrCode;
+			}
+		}
+		catch (DWORD ex)
+		{
+			if (ex == STATUS_LOCAL_DISCONNECT || ex == STATUS_CANCELLED)
+			{
+				cout << " Child socket closed." << endl;
+				continue;
+			}
+			if (ex == ERROR_SUCCESS)
+				cout << "Client " << psi->_sock << " disconnected..." << endl;
+			else if (ex == STATUS_CONNECTION_RESET)
+				cout << " Pending Client " << psi->_sock << " disconnected..." << endl;
+			else
+				cout << " Client " << psi->_sock << " has error" << ex << endl;
+
+			SetEvent(pi->ExtEvent);
+		}
+	}
+	return 0;
 }
