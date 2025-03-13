@@ -119,14 +119,35 @@ DWORD WINAPI IocpCallBack(PVOID pParam)
 			}
 			else
 			{
+				if (!psi->NickCheck)
+				{
+					strncpy_s(psi->NickName, sizeof(psi->NickName), psi->_buff, sizeof(psi->NickName) - 1);
+					psi->NickCheck = TRUE;
+					cout << "Client " << psi->_sock << " NickName Set : " << psi->NickName << endl;
+
+					DWORD dwFlags = 0;
+					WSABUF wsb;
+					wsb.buf = psi->_buff, wsb.len = sizeof(psi->_buff);
+					if (WSARecv(psi->_sock, &wsb, 1, NULL, &dwFlags, psi, NULL) == SOCKET_ERROR)
+					{
+						int nErrCode = WSAGetLastError();
+						if (nErrCode != WSA_IO_PENDING)
+							throw nErrCode;
+					}
+					continue;
+				}
 				if (dwBytes == 0)
 					throw (INT)ERROR_SUCCESS;
+				psi->_buff[dwBytes < sizeof(psi->_buff) ? dwBytes : sizeof(psi->_sock) - 1] = 0;
+				char sendbuff[200];
+				sprintf_s(sendbuff, sizeof(sendbuff), "[%s] %s", psi->NickName, psi->_buff);
+				int len = (int)strlen(sendbuff);
 				for (SOCK_SET::iterator it = pi->conn->begin(); it != pi->conn->end(); it++)
 				{
 					PSOCK_ITEM target = *it;
 					if (target != psi)
 					{
-						if (send(target->_sock, psi->_buff, dwBytes, 0) == SOCKET_ERROR)
+						if (send(target->_sock, sendbuff, len, 0) == SOCKET_ERROR)
 							throw WSAGetLastError();
 					}
 				}

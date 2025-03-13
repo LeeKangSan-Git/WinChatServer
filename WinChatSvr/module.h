@@ -31,6 +31,8 @@ struct SOCK_ITEM : OVERLAPPED
 {
 	SOCKET _sock;
 	char _buff[128];
+	char NickName[64];
+	BOOL NickCheck;
 
 	SOCK_ITEM(SOCKET sock)
 	{
