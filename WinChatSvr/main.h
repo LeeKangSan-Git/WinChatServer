@@ -1,3 +1,3 @@
 #pragma once
-DWORD mainThrId;
-BOOL CtrlHandler(DWORD fdwCtrlType);
+//DWORD mainThrId;
+//BOOL CtrlHandler(DWORD fdwCtrlType);

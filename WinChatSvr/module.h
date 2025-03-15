@@ -16,9 +16,14 @@ using namespace std;
 #endif
 
 //유저 정의 스레드 메시지
-#define TM_PROG_EXIT			WM_USER + 1
-#define TM_SOCK_CONNECTED		WM_USER + 2
-#define TM_SOCK_DISCONNECT		WM_USER + 3
+//#define TM_PROG_EXIT			WM_USER + 1
+//#define TM_SOCK_CONNECTED		WM_USER + 2
+//#define TM_SOCK_DISCONNECT	WM_USER + 3
+
+//새롭게 정의한 메시지
+#define CMD_DELETE	0	//소켓의 해제,closesocket을 통해 소켓을 닫는다.
+#define CMD_NEW		1	//소켓이 새로 생성되었으며,관련 TP_IO객체를 생성한다.
+#define CMD_REUSE	2	//소켓 재사용,DisconnectEx 호출 후 다시 AcceptEx를 호출한다.
 
 #define IOKEY_LISTEN	1
 #define IOKEY_CHILD		2
@@ -30,6 +35,7 @@ using namespace std;
 struct SOCK_ITEM : OVERLAPPED
 {
 	SOCKET _sock;
+	PTP_IO pio;
 	char _buff[128];
 	char NickName[64];
 	BOOL NickCheck;
@@ -44,20 +50,36 @@ using PSOCK_ITEM = SOCK_ITEM*;
 using SOCK_SET = set<PSOCK_ITEM>;
 struct IOCP_ENV
 {
-	HANDLE _iocp;
-	HANDLE hThread[MAX_TH];
-	SOCK_SET* conn;
+	//HANDLE _iocp;
+	//HANDLE hThread[MAX_TH];
+	PTP_IO pio;
+	PTP_WAIT pwi;	//소켓 풀의 모든 소켓이 소진된 상황에서 새로운 접속이 들어왔을 경우 통지를 처리를 위한 객체
+	SOCKET hsoListen;
+	HANDLE hEvent; //소켓 풀 제거 타이밍을 위한 이벤트
+	SOCK_SET conn, pool;
 	DWORD MainThrId;
-	DWORD ThreadCnt;
-	IOCP_ENV()
+	WSAEVENT wse; //리슨 이벤트 발생시 호출될 리슨 함수를 위한 이벤트
+	CRITICAL_SECTION cs;
+	//DWORD ThreadCnt;
+	IOCP_ENV(SOCKET Listen)
 	{
-		memset(this, 0, sizeof(*this));
+		//memset(this, 0, sizeof(*this));
+		hsoListen = Listen;
+		wse = WSACreateEvent();
+		hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
+		InitializeCriticalSection(&cs);
 	}
 };
 using PIOCP_ENV = IOCP_ENV*;
 
 PVOID GetSockExtAPI(SOCKET sock, GUID guidFn);
 SOCKET GetListen(short Port, int nBacklog = SOMAXCONN);
-DWORD MakeIocp(SOCKET hDevice, PIOCP_ENV pi, int Th = MAX_TH);
-DWORD MakeSockPool(SOCKET hsoListen, DWORD Sc, SOCK_SET* ss);
-DWORD WINAPI IocpCallBack(PVOID pParam);
+//DWORD MakeIocp(SOCKET hDevice, PIOCP_ENV pi, int Th = MAX_TH);
+//DWORD MakeSockPool(SOCKET hsoListen, DWORD Sc, SOCK_SET* ss);
+//DWORD WINAPI IocpCallBack(PVOID pParam);
+
+
+bool SocketManger(UINT uCmd, PIOCP_ENV pie, PSOCK_ITEM psi, PTP_CALLBACK_INSTANCE pInst = NULL);
+VOID CALLBACK MakeSockPool(PTP_CALLBACK_INSTANCE pci, PVOID pCtx, PTP_WAIT ptpWait, TP_WAIT_RESULT tResult);
+VOID CALLBACK ListenSockCallback(PTP_CALLBACK_INSTANCE pci, PVOID pCtx, PVOID pol, ULONG IoResult, ULONG_PTR dwTrBytes, PTP_IO pio);
+VOID CALLBACK ChiledSockCallBack(PTP_CALLBACK_INSTANCE Instance, PVOID pctx, PVOID pol, ULONG IoResult, ULONG_PTR dwTrBytes, PTP_IO pio);
